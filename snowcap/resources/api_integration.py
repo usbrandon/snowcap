@@ -111,10 +111,14 @@ class APIIntegration(NamedResource, Resource):
         self,
         name: str,
         api_provider: ApiProvider,
-        enabled: bool,
-        api_allowed_prefixes: list[str],
-        api_blocked_prefixes: list[str] = None,
+        # NB: api_aws_role_arn was previously a required positional arg.
+        # It is now optional (default None) so non-AWS api_provider values
+        # (GIT_HTTPS_API, AZURE_API_MANAGEMENT, GOOGLE_API_GATEWAY) can omit
+        # it. Positional order preserved to keep existing callers working.
         api_aws_role_arn: str = None,
+        enabled: bool = True,
+        api_allowed_prefixes: list[str] = None,
+        api_blocked_prefixes: list[str] = None,
         azure_tenant_id: str = None,
         azure_ad_application_id: str = None,
         google_audience: str = None,
