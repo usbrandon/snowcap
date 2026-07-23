@@ -84,6 +84,64 @@ def test_plan_remove_action(session_ctx, remote_state):
     assert change.urn == parse_URN("urn::ABCD123:role/REMOVED_ROLE")
 
 
+def test_plan_sync_drops_object_grant_not_covered_by_on_all_grant(session_ctx, remote_state):
+    """Regression: when the manifest contains ON ALL grants, remote object grants
+    that are NOT covered by any of them must still be dropped during grant sync.
+
+    Previously the drop branch was attached to the wrong if, so the presence of
+    any ON ALL grant in the manifest silently disabled dropping of every remote
+    object grant, covered or not.
+    """
+    urn = parse_URN(
+        "urn::ABCD123:grant/GRANT?grant_type=OBJECT&priv=INSERT&on=table/SOMEDB.SOMESCHEMA.SOME_TABLE&to=role/SOMEROLE"
+    )
+    remote_state[urn] = {
+        "grant_type": "OBJECT",
+        "priv": "INSERT",
+        "on": "SOMEDB.SOMESCHEMA.SOME_TABLE",
+        "on_type": "TABLE",
+        "to": "SOMEROLE",
+    }
+    bp = Blueprint(
+        resources=[
+            res.Role(name="SOMEROLE"),
+            res.Grant(priv="SELECT", on=["ALL", "TABLES", "SCHEMA", "somedb.someschema"], to="somerole"),
+        ],
+        sync_resources=[ResourceType.GRANT],
+    )
+    manifest = bp.generate_manifest(session_ctx)
+    plan = diff(remote_state, manifest)
+    drops = [change for change in plan if isinstance(change, DropResource)]
+    assert len(drops) == 1
+    assert drops[0].urn == urn
+
+
+def test_plan_sync_keeps_object_grant_covered_by_on_all_grant(session_ctx, remote_state):
+    """Remote object grants that ARE covered by an ON ALL grant in the manifest
+    (same priv, same grantee, object type and container match) must not be dropped."""
+    urn = parse_URN(
+        "urn::ABCD123:grant/GRANT?grant_type=OBJECT&priv=SELECT&on=table/SOMEDB.SOMESCHEMA.SOME_TABLE&to=role/SOMEROLE"
+    )
+    remote_state[urn] = {
+        "grant_type": "OBJECT",
+        "priv": "SELECT",
+        "on": "SOMEDB.SOMESCHEMA.SOME_TABLE",
+        "on_type": "TABLE",
+        "to": "SOMEROLE",
+    }
+    bp = Blueprint(
+        resources=[
+            res.Role(name="SOMEROLE"),
+            res.Grant(priv="SELECT", on=["ALL", "TABLES", "SCHEMA", "somedb.someschema"], to="somerole"),
+        ],
+        sync_resources=[ResourceType.GRANT],
+    )
+    manifest = bp.generate_manifest(session_ctx)
+    plan = diff(remote_state, manifest)
+    drops = [change for change in plan if isinstance(change, DropResource)]
+    assert drops == []
+
+
 def test_plan_no_removes_in_resources_not_in_sync_resources(session_ctx, remote_state):
     """Test that plan correctly identifies resources to remove.
 

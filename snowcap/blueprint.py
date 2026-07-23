@@ -2233,8 +2233,7 @@ def diff(remote_state: State, manifest: Manifest) -> list:
             ]
             if matching_grants:
                 continue
-        else:
-            changes.append(DropResource(urn, remote_state[urn]))
+        changes.append(DropResource(urn, remote_state[urn]))
 
     # Resources in the manifest but not in remote state should be added
     for urn in manifest_urns - state_urns:
