@@ -1525,14 +1525,20 @@ class Blueprint:
                 resource.requires(resource.container.container)
 
     def _create_stage_privilege_refs(self) -> None:
-        stage_grants: dict[str, list[Grant]] = {}
+        stage_grants: dict[tuple, list[Grant]] = {}
 
         for resource in _walk(self._root):
             if isinstance(resource, Grant):
-                if resource._data.on_type == ResourceType.STAGE:
-                    if resource._data.on not in stage_grants:
-                        stage_grants[resource._data.on] = []
-                    stage_grants[resource._data.on].append(resource)
+                # Snowflake requires READ before/with WRITE on a stage. Catch
+                # both direct grants (on_type == STAGE) and bulk ALL/FUTURE
+                # grants (items_type == STAGE), keyed by exact scope so the
+                # WRITE -> READ dependency below covers each case.
+                d = resource._data
+                if d.on_type == ResourceType.STAGE or d.items_type == ResourceType.STAGE:
+                    key = (d.on_type, d.on, d.grant_type, d.items_type)
+                    if key not in stage_grants:
+                        stage_grants[key] = []
+                    stage_grants[key].append(resource)
 
         def _apply_refs(stage_grants):
             for stage in stage_grants.keys():
@@ -1991,6 +1997,8 @@ def sql_commands_for_change(
     elif isinstance(change, UpdateResource):
         props = Resource.props_for_resource_type(change.urn.resource_type, change.after)
         change_cmd = lifecycle.update_resource(change.urn, change.delta, props)
+        if change.urn.resource_type == ResourceType.TAG_MASKING_POLICY_REFERENCE:
+            after_change_cmd.append(lifecycle.create_tag_masking_policy_reference(change.urn, change.after, props))
     elif isinstance(change, DropResource):
         if transfer_owner:
             before_change_cmd.append(

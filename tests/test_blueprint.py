@@ -442,6 +442,56 @@ def test_blueprint_reference_sorting(session_ctx, remote_state):
     assert db3_change.resource_cls == res.Database
 
 
+def test_blueprint_bulk_stage_read_write_ordering(session_ctx):
+    """
+    Bulk (ALL/FUTURE) stage grants must order READ before WRITE, just like
+    grants on a single named stage. _create_stage_privilege_refs should make
+    each WRITE grant depend on the matching READ grant over the same scope,
+    for every ALL/FUTURE x DATABASE/SCHEMA combination.
+    """
+    role = res.Role(name="R_RW")
+
+    # Every ALL/FUTURE x DATABASE/SCHEMA combination must order READ before
+    # WRITE, since _create_stage_privilege_refs keys on items_type == STAGE
+    # regardless of container type or grant type.
+    all_db_read = res.Grant(priv="READ", on="all stages in database DB", to=role)
+    all_db_write = res.Grant(priv="WRITE", on="all stages in database DB", to=role)
+    all_sc_read = res.Grant(priv="READ", on="all stages in schema DB.SC", to=role)
+    all_sc_write = res.Grant(priv="WRITE", on="all stages in schema DB.SC", to=role)
+    future_db_read = res.Grant(priv="READ", on="future stages in database DB", to=role)
+    future_db_write = res.Grant(priv="WRITE", on="future stages in database DB", to=role)
+    future_sc_read = res.Grant(priv="READ", on="future stages in schema DB.SC", to=role)
+    future_sc_write = res.Grant(priv="WRITE", on="future stages in schema DB.SC", to=role)
+
+    blueprint = Blueprint(
+        resources=[
+            role,
+            all_db_read,
+            all_db_write,
+            all_sc_read,
+            all_sc_write,
+            future_db_read,
+            future_db_write,
+            future_sc_read,
+            future_sc_write,
+        ]
+    )
+    blueprint._finalize(session_ctx)
+
+    # WRITE depends on READ -> READ is applied first, for each scope
+    assert all_db_read in all_db_write.refs
+    assert all_sc_read in all_sc_write.refs
+    assert future_db_read in future_db_write.refs
+    assert future_sc_read in future_sc_write.refs
+
+    # Scopes must not cross-link: a WRITE only depends on the READ over its
+    # exact same scope, not on READs from other container/grant-type scopes.
+    assert all_sc_read not in all_db_write.refs
+    assert future_db_read not in all_db_write.refs
+    assert future_sc_read not in future_db_write.refs
+    assert all_db_read not in future_sc_write.refs
+
+
 def test_blueprint_ownership_sorting(session_ctx, remote_state):
 
     role = res.Role(name="SOME_ROLE")
@@ -769,6 +819,39 @@ def test_blueprint_warehouse_scaling_policy_doesnt_render_in_standard_edition(se
     assert sql[1] == "USE ROLE SYSADMIN"
     assert sql[2].startswith("CREATE WAREHOUSE WH")
     assert "scaling_policy" not in sql[2]
+
+
+def test_blueprint_warehouse_generation_and_resource_constraint_update(session_ctx):
+    wh_urn = parse_URN("urn::ABCD123:warehouse/WH")
+    remote_state = {
+        parse_URN("urn::ABCD123:account/ACCOUNT"): {},
+        wh_urn: res.Warehouse(
+            name="WH",
+            generation="1",
+            resource_constraint="STANDARD_GEN_1",
+        ).to_dict(),
+    }
+    blueprint = Blueprint(
+        resources=[
+            res.Warehouse(
+                name="WH",
+                generation="2",
+                resource_constraint="STANDARD_GEN_2",
+            )
+        ]
+    )
+    manifest = blueprint.generate_manifest(session_ctx)
+
+    plan = diff(remote_state, manifest)
+    assert len(plan) == 1
+    wh_change = plan[0]
+    assert wh_change.delta == {
+        "generation": "2",
+        "resource_constraint": "STANDARD_GEN_2",
+    }
+
+    sql = flatten_sql_commands(compile_plan_to_sql(session_ctx, plan))
+    assert "ALTER WAREHOUSE WH SET GENERATION = '2' RESOURCE_CONSTRAINT = STANDARD_GEN_2" in sql
 
 
 def test_blueprint_scope_config():

@@ -33,6 +33,37 @@ def test_enum_field_serialization():
     assert warehouse._data.warehouse_size == WarehouseSize.XSMALL
 
 
+def test_warehouse_generation_create_sql():
+    warehouse = res.Warehouse(name="WH", generation="2")
+    sql = warehouse.create_sql()
+    assert "GENERATION = '2'" in sql
+    assert "ENABLE_QUERY_ACCELERATION" not in sql
+    assert "QUERY_ACCELERATION_MAX_SCALE_FACTOR" not in sql
+
+
+def test_warehouse_resource_constraint_create_sql():
+    warehouse = res.Warehouse(name="WH", resource_constraint="STANDARD_GEN_2")
+    assert "RESOURCE_CONSTRAINT = STANDARD_GEN_2" in warehouse.create_sql()
+
+
+def test_warehouse_consistent_generation_and_resource_constraint_create_sql():
+    warehouse = res.Warehouse(name="WH", generation="2", resource_constraint="STANDARD_GEN_2")
+    sql = warehouse.create_sql()
+    assert "GENERATION = '2'" in sql
+    assert "RESOURCE_CONSTRAINT = STANDARD_GEN_2" in sql
+
+
+def test_warehouse_explicit_query_acceleration_create_sql():
+    warehouse = res.Warehouse(
+        name="WH",
+        enable_query_acceleration=False,
+        query_acceleration_max_scale_factor=8,
+    )
+    sql = warehouse.create_sql()
+    assert "ENABLE_QUERY_ACCELERATION = FALSE" in sql
+    assert "QUERY_ACCELERATION_MAX_SCALE_FACTOR = 8" in sql
+
+
 @pytest.fixture(
     params=SQL_FIXTURES,
     ids=[f"{resource_cls.__name__}({idx})" for resource_cls, _, idx in SQL_FIXTURES],
@@ -297,4 +328,41 @@ def test_user_type_fallback(caplog):
     assert "The 'user_type' parameter is deprecated. Use 'type' instead." in caplog.text
     assert user._data.type == UserType.SERVICE
 
+
+class TestTagMaskingPolicyReferenceNormalization:
+    """
+    Verify that _TagMaskingPolicyReference normalizes identifier case to lowercase.
+
+    The data provider (fetch_tag_masking_policy_reference) always returns lowercase
+    identifier strings.  Without normalization, a YAML manifest that uses uppercase
+    or mixed-case names would produce a case-sensitive delta against the remote state,
+    triggering a spurious UPDATE that generates malformed SQL via update__default.
+    """
+
+    def test_tag_name_normalized_to_lowercase(self):
+        ref = res.TagMaskingPolicyReference(
+            tag_name="GOVERNANCE.TAGS.HR_PII",
+            masking_policy_name="GOVERNANCE.POLICIES.MASK_HR_PII",
+        )
+        assert ref._data.tag_name == "governance.tags.hr_pii"
+
+    def test_masking_policy_name_normalized_to_lowercase(self):
+        ref = res.TagMaskingPolicyReference(
+            tag_name="governance.tags.hr_pii",
+            masking_policy_name="GOVERNANCE.POLICIES.MASK_HR_PII_TIMESTAMP_NTZ",
+        )
+        assert ref._data.masking_policy_name == "governance.policies.mask_hr_pii_timestamp_ntz"
+
+    def test_mixed_case_matches_lowercase_remote_state(self):
+        """YAML with mixed case should produce the same data dict as the remote state."""
+        ref_mixed = res.TagMaskingPolicyReference(
+            tag_name="Governance.Tags.HR_PII",
+            masking_policy_name="Governance.Policies.Mask_HR_PII",
+        )
+        ref_lower = res.TagMaskingPolicyReference(
+            tag_name="governance.tags.hr_pii",
+            masking_policy_name="governance.policies.mask_hr_pii",
+        )
+        assert ref_mixed._data.tag_name == ref_lower._data.tag_name
+        assert ref_mixed._data.masking_policy_name == ref_lower._data.masking_policy_name
 
